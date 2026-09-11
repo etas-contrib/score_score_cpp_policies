@@ -7,7 +7,32 @@ dedicated Bazel config flag. Sanitizers can be used in isolation or combined.
 
 ---
 
+## Policy Ownership
+
+`score_cpp_policies` is the canonical owner of sanitizer policy. Toolchain
+packages provide compilers; the consuming workspace registers the policy's
+feature labels with its toolchain. This policy includes the feature definitions,
+configuration flags, constraints, test wrapper, runtime suppressions, and Bazel
+configs.
+
+---
+
 ## Quick Start
+
+Add the policy dependency to your `MODULE.bazel` without pinning a version here (if you pin a version, ensure you are using >= 0.1.0, as before that the policies were defined in "bazel_cpp_toolchains"):
+
+```python
+bazel_dep(name = "score_cpp_policies")
+```
+
+Import `sanitizers.bazelrc` from your workspace `.bazelrc` using the `try-import` example:
+
+```
+try-import %workspace%/path/to/score_cpp_policies/sanitizers/sanitizers.bazelrc
+```
+
+Complete the mandatory [Toolchain Registration](#toolchain-registration) before
+using a sanitizer config.
 
 ```bash
 # Run tests with AddressSanitizer
@@ -22,12 +47,6 @@ bazel test --config=asan_ubsan_lsan //your/target/...
 # Run tests with TSan + UBSan
 bazel test --config=tsan_ubsan //your/target/...
 ```
-
-> **Note:** Import `sanitizers.bazelrc` from your workspace `.bazelrc` to make the
-> above configs available:
-> ```
-> try-import %workspace%/path/to/score_cpp_policies/sanitizers/sanitizers.bazelrc
-> ```
 
 ---
 
@@ -59,10 +78,11 @@ One `bool_flag` per sanitizer (`asan`, `ubsan`, `lsan`, `tsan`) and correspondin
 Flags are set automatically by the `--config=` aliases in `sanitizers.bazelrc`.
 Do not set them directly unless you have a non-standard composition need.
 
-### `features/` — Compiler/linker feature definitions
+### `features/` — Policy-owned compiler/linker feature definitions
 
-One `cc_feature` per sanitizer, registered under the `score_*` namespace to
-avoid collisions with toolchain built-in feature names:
+The policy owns these `cc_feature` targets. Register them through your
+toolchain's `extra_known_features`; their `score_*` names avoid collisions with
+toolchain built-in feature names:
 
 | Target | Feature name | Toolchain | Key flags |
 |---|---|---|---|
@@ -72,7 +92,11 @@ avoid collisions with toolchain built-in feature names:
 | `ubsan_clang` | `score_ubsan_clang` | Clang | implies `ubsan_base` + `-fsanitize-link-c++-runtime` (link) |
 | `lsan` | `score_lsan` | both | `-fsanitize=leak` |
 | `tsan` | `score_tsan` | both | `-fsanitize=thread`, `-O1` |
-| `debug_symbols` | `debug_symbols` | both | `-g1` + `--strip=never` |
+| `debug_symbols` | `debug_symbols` | both | `-g1` |
+
+The `with_debug_symbols` config adds `--strip=never`. Each sanitizer feature
+implies `debug_symbols`; `ubsan_gcc` and `ubsan_clang` imply `ubsan_base`, which
+then implies `debug_symbols`.
 
 UBSan uses a three-target composition:
 - `ubsan_base` carries the flags common to both toolchains (`-fsanitize=undefined` at compile and link time).
@@ -154,7 +178,7 @@ Available constraints:
 | `only_lsan` | Only run when LSan is active |
 | `only_tsan` | Only run when TSan is active |
 
-> **Note — `no_asan_ubsan_lsan` semantic:**  
+> **Note — `no_asan_ubsan_lsan` semantic:**
 > In the previous single-flag API, `no_asan_ubsan_lsan` was satisfied only when the
 > combined `asan_ubsan_lsan` preset was active (i.e. all three flags simultaneously).
 > In the current per-flag API it is satisfied when **any one** of the three flags is
@@ -162,7 +186,7 @@ Available constraints:
 >
 > | Scenario | Old behaviour | New behaviour |
 > |---|---|---|
-> | Only `--//flags:asan=True` | Target **skipped** — combo not active, so `no_asan_ubsan_lsan` was always satisfied | Target **skipped** — `any_asan_ubsan_lsan` is satisfied |
+> | Only `--//flags:asan=True` | Target **built** — combo not active, so the old `match_all` constraint was satisfied | Target **skipped** — `any_asan_ubsan_lsan` is satisfied |
 > | `--//flags:asan + :ubsan + :lsan` | Target **skipped** | Target **skipped** |
 > | No sanitizer | Target **built** | Target **built** |
 >
@@ -174,7 +198,7 @@ Available constraints:
 
 ## Valid Sanitizer Combinations
 
-The following table shows which flag combinations are **supported**:
+The following table lists the supported presets and selected combinations:
 
 | ASan | UBSan | LSan | TSan | Status | Preset |
 |:---:|:---:|:---:|:---:|---|---|
@@ -207,8 +231,9 @@ Each env file sets sanitizer-specific runtime options (e.g. `ASAN_OPTIONS`,
 
 ## Toolchain Registration
 
-To use sanitizer features, register them in your toolchain's `known_features`
-or `extra_known_features`:
+Users of `score_bazel_cpp_toolchains` pass these policy targets through
+`extra_known_features`/`extra_enabled_features`. The policy is toolchain-neutral: use the matching UBSan
+variant for the compiler package in use.
 
 ```python
 # Clang toolchain (toolchains_llvm)
@@ -255,29 +280,12 @@ testing) rather than relying on `wrapper` at test-run time.
 
 ## Migration from v0.x
 
-The `--@score_cpp_policies//sanitizers/flags:sanitizer=<value>` string flag has been removed.
-Replace any direct flag usage with the equivalent `--config=` alias:
+The complete migration procedure, old-to-new mapping, toolchain registration
+examples, compatibility rules, and validation commands are in the
+[authoritative sanitizer migration guide](../docs/migration-sanitizers.md).
 
-| Old | New |
-|-----|-----|
-| `--@score_cpp_policies//sanitizers/flags:sanitizer=asan_ubsan_lsan` | `--config=asan_ubsan_lsan` |
-| `--@score_cpp_policies//sanitizers/flags:sanitizer=tsan` | `--config=tsan` |
-
-`--config=asan`, `--config=ubsan`, and `--config=lsan` now activate exactly their named
-sanitizer rather than the combined `asan_ubsan_lsan` mode.
-
-### GCC-specific feature variants removed
-
-The `asan_ubsan_lsan_gcc` and `tsan_gcc` `cc_feature` targets (which omitted
-`-fsanitize-link-c++-runtime`) have been removed. The new per-sanitizer features
-(`score_asan`, `score_ubsan`, etc.) work with both Clang and GCC toolchains. If you were
-registering GCC-specific features explicitly in your toolchain, replace them with the new
-single features (e.g. `@score_cpp_policies//sanitizers/features:asan`).
-
-### `no_asan_ubsan_lsan` constraint semantics changed
-
-See the `constraints/` section above — in the previous
-single-flag API, `no_asan_ubsan_lsan` was satisfied only when the combined
-`asan_ubsan_lsan` preset was active (all three flags simultaneously). In the current
-per-flag API it is satisfied when **any one** of the three flags is set. Prefer the more
-granular `no_asan`, `no_ubsan`, or `no_lsan` constraints for new targets.
+In short: add `score_cpp_policies`, import `sanitizers.bazelrc`, register the
+per-sanitizer feature labels through `extra_known_features`, replace the
+deprecated string flag and removed GCC aggregate features, and review uses of
+`no_asan_ubsan_lsan` because its current meaning is "skip when any of ASan,
+UBSan, or LSan is active."

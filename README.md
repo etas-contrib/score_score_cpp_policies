@@ -67,7 +67,8 @@ bazel test --config=asan_ubsan_lsan //...   # recommended default for CI
 ```
 
 See [`sanitizers/README.md`](sanitizers/README.md) for setup, the full config/constraint
-reference, and the v0.x migration guide.
+reference, and the v0.x migration guide. See the [detailed sanitizer migration guide](docs/migration-sanitizers.md)
+for the complete old-to-new API procedure.
 
 ## Clang-Tidy
 
